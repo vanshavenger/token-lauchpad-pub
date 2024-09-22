@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { Keypair, SystemProgram, Transaction } from '@solana/web3.js'
 import {
@@ -19,17 +19,19 @@ import {
   pack,
   TokenMetadata,
 } from '@solana/spl-token-metadata'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import { toast } from 'sonner'
 import {
   Loader2,
   Rocket,
   Coins,
   Tag,
-  Image,
+  Image as ImageIcon,
   Hash,
   Layers,
   Info,
+  ExternalLink,
+  CheckCircle2,
 } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
@@ -40,6 +42,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { ErrorBoundary } from 'react-error-boundary'
+
 
 const t = (key: string) => {
   const translations: { [key: string]: string } = {
@@ -47,7 +51,7 @@ const t = (key: string) => {
     'hero.description':
       'Create and deploy your custom token on the Solana blockchain in minutes!',
     'hero.cta': 'Get Started',
-    'form.title': 'Create Your Token',
+    'form.title': 'Create Your Token (Devnet Only)',
     'form.name.label': 'Token Name',
     'form.name.placeholder': 'Enter token name',
     'form.name.tooltip': 'The name of your token (max 32 characters)',
@@ -80,6 +84,14 @@ const t = (key: string) => {
     'success.tokenCreated': 'Token created successfully',
     'success.tokenCreatedDesc':
       'Your token {name} ({symbol}) has been created.',
+    'preview.title': 'Token Preview',
+    'transaction.success': 'Transaction Successful!',
+    'transaction.viewExplorer': 'View Transaction',
+    'steps.info': 'Token Creation Steps',
+    'steps.prepare': 'Prepare Token Data',
+    'steps.create': 'Create Token',
+    'steps.mint': 'Mint Initial Supply',
+    'steps.complete': 'Complete',
   }
   return translations[key] || key
 }
@@ -119,18 +131,102 @@ const formSchema = z.object({
 
 type FormData = z.infer<typeof formSchema>
 
+const TokenPreview = React.memo(
+  ({ name, symbol, imageUrl }: Partial<FormData>) => {
+    return (
+      <div className='bg-white p-4 rounded-lg shadow-md'>
+        <h4 className='text-lg font-bold mb-2'>{t('preview.title')}</h4>
+        <div className='flex items-center space-x-4'>
+          {imageUrl && (
+            <img
+              src={imageUrl}
+              alt='Token'
+              className='w-16 h-16 rounded-full object-cover'
+            />
+          )}
+          <div>
+            <p className='font-semibold'>{name || 'Token Name'}</p>
+            <p className='text-sm text-gray-600'>{symbol || 'SYM'}</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+)
+
+TokenPreview.displayName = 'TokenPreview'
+
+function ErrorFallback({
+  error,
+  resetErrorBoundary,
+}: {
+  error: Error
+  resetErrorBoundary: () => void
+}) {
+  return (
+    <div
+      role='alert'
+      className='bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative'
+    >
+      <strong className='font-bold'>Oops! Something went wrong.</strong>
+      <p className='mt-2'>{error.message}</p>
+      <button
+        onClick={resetErrorBoundary}
+        className='mt-4 bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded'
+      >
+        Try again
+      </button>
+    </div>
+  )
+}
+
+const StepIndicator = React.memo(({ currentStep }: { currentStep: number }) => {
+  const steps = [
+    { title: t('steps.prepare'), icon: Coins },
+    { title: t('steps.create'), icon: Rocket },
+    { title: t('steps.mint'), icon: Layers },
+    { title: t('steps.complete'), icon: CheckCircle2 },
+  ]
+
+  return (
+    <div className='flex justify-between mb-8'>
+      {steps.map((step, index) => (
+        <div key={step.title} className='flex flex-col items-center'>
+          <div
+            className={`w-8 h-8 rounded-full flex items-center justify-center ${
+              index <= currentStep ? 'bg-yellow-300' : 'bg-gray-300'
+            }`}
+          >
+            <step.icon className='w-5 h-5 text-black' />
+          </div>
+          <span className='text-xs mt-1'>{step.title}</span>
+        </div>
+      ))}
+    </div>
+  )
+})
+
+StepIndicator.displayName = 'StepIndicator'
+
 export function TokenLaunchpad() {
   const { connection } = useConnection()
   const wallet = useWallet()
   const [isLoading, setIsLoading] = useState(false)
+  const [currentStep, setCurrentStep] = useState(0)
+  const [transactionSignature, setTransactionSignature] = useState<
+    string | null
+  >(null)
   const {
     register,
     handleSubmit,
     formState: { errors },
+    watch,
     reset,
   } = useForm<FormData>({
     resolver: zodResolver(formSchema),
   })
+
+  const watchedFields = watch()
 
   useEffect(() => {
     if (!wallet.connected) {
@@ -156,6 +252,7 @@ export function TokenLaunchpad() {
       }
 
       setIsLoading(true)
+      setCurrentStep(1)
       toast.loading(t('form.submitting'), { id: 'creating-token' })
 
       try {
@@ -228,7 +325,9 @@ export function TokenLaunchpad() {
 
         transaction.partialSign(keypair)
 
-        const response = await wallet.sendTransaction(transaction, connection)
+        setCurrentStep(2)
+        const signature = await wallet.sendTransaction(transaction, connection)
+        setTransactionSignature(signature)
 
         const associatedToken = getAssociatedTokenAddressSync(
           keypair.publicKey,
@@ -266,6 +365,7 @@ export function TokenLaunchpad() {
 
         await wallet.sendTransaction(transaction3, connection)
 
+        setCurrentStep(3)
         toast.success(t('success.tokenCreated'), {
           description: t('success.tokenCreatedDesc')
             .replace('{name}', data.name)
@@ -273,7 +373,9 @@ export function TokenLaunchpad() {
           id: 'creating-token',
         })
 
+
         reset()
+        setCurrentStep(0)
       } catch (error) {
         console.error('Error creating token:', error)
         let errorMessage = t('error.generic')
@@ -316,7 +418,7 @@ export function TokenLaunchpad() {
         label: t('form.imageUrl.label'),
         placeholder: t('form.imageUrl.placeholder'),
         tooltip: t('form.imageUrl.tooltip'),
-        icon: Image,
+        icon: ImageIcon,
       },
       {
         name: 'initialSupply',
@@ -337,124 +439,179 @@ export function TokenLaunchpad() {
   )
 
   return (
-    <TooltipProvider delayDuration={0}>
-      <section className='py-10 md:py-20 text-center text-black bg-yellow-300 relative overflow-hidden'>
-        <div className='container mx-auto relative z-10 px-4'>
-          <motion.h2
-            className='text-4xl md:text-6xl font-bold mb-4'
-            initial={{ opacity: 0, y: -50 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.2 }}
-          >
-            {t('hero.title')}
-          </motion.h2>
-          <motion.p
-            className='text-xl md:text-2xl mb-8'
-            initial={{ opacity: 0, y: -30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.4 }}
-          >
-            {t('hero.description')}
-          </motion.p>
-          <motion.a
-            href='#create-token'
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className='inline-block bg-black text-yellow-300 font-bold text-lg py-4 px-8 rounded-none border-4 border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:shadow-none transition-all duration-300'
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.6 }}
-          >
-            {t('hero.cta')}
-          </motion.a>
-        </div>
-      </section>
-
-      <section id='create-token' className='py-10 md:py-20 bg-blue-300'>
-        <div className='container mx-auto px-4'>
-          <motion.div
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ duration: 0.5 }}
-            className='bg-white border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] p-6 md:p-8 max-w-2xl mx-auto'
-          >
-            <h3 className='text-3xl md:text-4xl font-bold mb-8 text-center text-black'>
-              {t('form.title')}
-            </h3>
-            <form
-              onSubmit={handleSubmit(createToken)}
-              className='grid grid-cols-1 md:grid-cols-2 gap-6'
+    <ErrorBoundary FallbackComponent={ErrorFallback}>
+      <TooltipProvider delayDuration={0}>
+        <section className='py-10 md:py-20 text-center text-black bg-yellow-300 relative overflow-hidden'>
+          <div className='container mx-auto relative z-10 px-4'>
+            <motion.h2
+              className='text-4xl md:text-6xl font-bold mb-4'
+              initial={{ opacity: 0, y: -50 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.2 }}
             >
-              {formFields.map((field) => (
-                <div key={field.name}>
-                  <label
-                    htmlFor={field.name}
-                    className='block text-lg font-bold mb-2 text-black'
+              {t('hero.title')}
+            </motion.h2>
+            <motion.p
+              className='text-xl md:text-2xl mb-8'
+              initial={{ opacity: 0, y: -30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.4 }}
+            >
+              {t('hero.description')}
+            </motion.p>
+            <motion.a
+              href='#create-token'
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className='inline-block bg-black text-yellow-300 font-bold text-lg py-4 px-8 rounded-none border-4 border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:shadow-none transition-all duration-300'
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.6 }}
+            >
+              {t('hero.cta')}
+            </motion.a>
+          </div>
+        </section>
+        <section id='create-token' className='py-10 md:py-20 bg-blue-300'>
+          <div className='container mx-auto px-4'>
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ duration: 0.5 }}
+              className='bg-white border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] p-6 md:p-8 max-w-2xl mx-auto'
+            >
+              <h3 className='text-3xl md:text-4xl font-bold mb-8 text-center text-black'>
+                {t('form.title')}
+              </h3>
+
+              <StepIndicator currentStep={currentStep} />
+
+              <form
+                onSubmit={handleSubmit(createToken)}
+                className='grid grid-cols-1 md:grid-cols-2 gap-6'
+              >
+                <AnimatePresence>
+                  {formFields.map((field) => (
+                    <motion.div
+                      key={field.name}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -20 }}
+                      transition={{ duration: 0.3 }}
+                    >
+                      <label
+                        htmlFor={field.name}
+                        className='block text-lg font-bold mb-2 text-black'
+                      >
+                        <field.icon
+                          className='inline-block mr-2 h-5 w-5'
+                          aria-hidden='true'
+                        />
+                        {field.label}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Info
+                              className='inline-block ml-1 h-4 w-4 cursor-help'
+                              aria-label={`Info about ${field.label}`}
+                            />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>{field.tooltip}</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </label>
+                      <input
+                        id={field.name}
+                        type={
+                          field.name === 'imageUrl'
+                            ? 'url'
+                            : field.name === 'initialSupply' ||
+                              field.name === 'decimals'
+                            ? 'number'
+                            : 'text'
+                        }
+                        placeholder={field.placeholder}
+                        {...register(field.name as keyof FormData)}
+                        className='w-full p-3 border-2 border-black rounded-none focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition-all duration-300'
+                        aria-label={field.label}
+                        aria-invalid={
+                          errors[field.name as keyof FormData]
+                            ? 'true'
+                            : 'false'
+                        }
+                      />
+                      {errors[field.name as keyof FormData] && (
+                        <p className='text-red-500 mt-1' role='alert'>
+                          {errors[field.name as keyof FormData]?.message}
+                        </p>
+                      )}
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+                <div className='md:col-span-2'>
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    type='submit'
+                    disabled={!wallet.connected || isLoading}
+                    className='w-full mt-8 bg-black text-yellow-300 font-bold py-4 px-4 rounded-none border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-none transition-all duration-300 flex items-center justify-center text-lg disabled:opacity-50 disabled:cursor-not-allowed'
+                    aria-label={
+                      isLoading ? t('form.submitting') : t('form.submit')
+                    }
                   >
-                    <field.icon className='inline-block mr-2 h-5 w-5' />
-                    {field.label}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Info className='inline-block ml-1 h-4 w-4 cursor-help' />
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>{field.tooltip}</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </label>
-                  <input
-                    id={field.name}
-                    type={
-                      field.name === 'imageUrl'
-                        ? 'url'
-                        : field.name === 'initial Supply' ||
-                          field.name === 'decimals'
-                        ? 'number'
-                        : 'text'
-                    }
-                    placeholder={field.placeholder}
-                    {...register(field.name as keyof FormData)}
-                    className='w-full p-3 border-2 border-black rounded-none focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition-all duration-300'
-                    aria-label={field.label}
-                    aria-invalid={
-                      errors[field.name as keyof FormData] ? 'true' : 'false'
-                    }
-                  />
-                  {errors[field.name as keyof FormData] && (
-                    <p className='text-red-500 mt-1' role='alert'>
-                      {errors[field.name as keyof FormData]?.message}
-                    </p>
-                  )}
+                    {isLoading ? (
+                      <>
+                        <Loader2
+                          className='mr-2 h-6 w-6 animate-spin'
+                          aria-hidden='true'
+                        />
+                        {t('form.submitting')}
+                      </>
+                    ) : (
+                      <>
+                        <Rocket className='mr-2 h-6 w-6' aria-hidden='true' />
+                        {t('form.submit')}
+                      </>
+                    )}
+                  </motion.button>
                 </div>
-              ))}
-              <div className='md:col-span-2'>
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  type='submit'
-                  disabled={!wallet.connected || isLoading}
-                  className='w-full mt-8 bg-black text-yellow-300 font-bold py-4 px-4 rounded-none border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-none transition-all duration-300 flex items-center justify-center text-lg disabled:opacity-50 disabled:cursor-not-allowed'
-                  aria-label={
-                    isLoading ? t('form.submitting') : t('form.submit')
-                  }
+              </form>
+              <motion.div
+                className='mt-8'
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5 }}
+              >
+                <TokenPreview {...watchedFields} />
+              </motion.div>
+
+              {transactionSignature && (
+                <motion.div
+                  className='mt-8 p-4 bg-green-100 border border-green-400 text-green-700 rounded'
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.5 }}
                 >
-                  {isLoading ? (
-                    <>
-                      <Loader2 className='mr-2 h-6 w-6 animate-spin' />
-                      {t('form.submitting')}
-                    </>
-                  ) : (
-                    <>
-                      <Rocket className='mr-2 h-6 w-6' />
-                      {t('form.submit')}
-                    </>
-                  )}
-                </motion.button>
-              </div>
-            </form>
-          </motion.div>
-        </div>
-      </section>
-    </TooltipProvider>
+                  <h4 className='font-bold mb-2'>{t('transaction.success')}</h4>
+                  <p>
+                    Your token has been created. View the transaction on Solana
+                    Explorer:
+                  </p>
+                  <a
+                    href={`https://explorer.solana.com/tx/${transactionSignature}`}
+                    target='_blank'
+                    rel='noopener noreferrer'
+                    className='text-blue-500 hover:text-blue-700 underline flex items-center mt-2'
+                  >
+                    {t('transaction.viewExplorer')}{' '}
+                    <ExternalLink className='ml-1 h-4 w-4' aria-hidden='true' />
+                  </a>
+                </motion.div>
+              )}
+            </motion.div>
+          </div>
+        </section>
+      </TooltipProvider>
+    </ErrorBoundary>
   )
 }
