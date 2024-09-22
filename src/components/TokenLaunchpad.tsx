@@ -1,6 +1,4 @@
-'use client'
-
-import { useEffect } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { Keypair, SystemProgram, Transaction } from '@solana/web3.js'
 import {
@@ -23,187 +21,340 @@ import {
 } from '@solana/spl-token-metadata'
 import { motion } from 'framer-motion'
 import { toast } from 'sonner'
-import { Loader2, Rocket, Coins, Tag, Image, Hash, Layers } from 'lucide-react'
+import {
+  Loader2,
+  Rocket,
+  Coins,
+  Tag,
+  Image,
+  Hash,
+  Layers,
+  Info,
+} from 'lucide-react'
 import { useForm } from 'react-hook-form'
+import { z } from 'zod'
+import { zodResolver } from '@hookform/resolvers/zod'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 
-type FormData = {
-  name: string
-  symbol: string
-  imageUrl: string
-  initialSupply: string
-  decimals: string
+const t = (key: string) => {
+  const translations: { [key: string]: string } = {
+    'hero.title': 'Launch Your Solana Token',
+    'hero.description':
+      'Create and deploy your custom token on the Solana blockchain in minutes!',
+    'hero.cta': 'Get Started',
+    'form.title': 'Create Your Token',
+    'form.name.label': 'Token Name',
+    'form.name.placeholder': 'Enter token name',
+    'form.name.tooltip': 'The name of your token (max 32 characters)',
+    'form.symbol.label': 'Token Symbol',
+    'form.symbol.placeholder': 'Enter token symbol',
+    'form.symbol.tooltip':
+      'A short identifier for your token (max 10 uppercase characters)',
+    'form.imageUrl.label': 'Image URL',
+    'form.imageUrl.placeholder': 'Enter image URL',
+    'form.imageUrl.tooltip':
+      'A URL pointing to an image representing your token',
+    'form.initialSupply.label': 'Initial Supply',
+    'form.initialSupply.placeholder': 'Enter initial supply',
+    'form.initialSupply.tooltip': 'The initial number of tokens to mint',
+    'form.decimals.label': 'Decimals',
+    'form.decimals.placeholder': 'Enter number of decimals',
+    'form.decimals.tooltip':
+      'The number of decimal places for your token (0-9)',
+    'form.submit': 'Launch Token',
+    'form.submitting': 'Creating Token...',
+    'error.walletNotConnected': 'Wallet not connected',
+    'error.walletNotConnectedDesc':
+      'Please connect your wallet to create a token.',
+    'error.insufficientFunds':
+      'Insufficient funds to create the token. Please check your wallet balance.',
+    'error.transactionFailed':
+      'Transaction simulation failed. This could be due to network congestion or an issue with the token parameters.',
+    'error.generic':
+      'An error occurred while creating the token. Please try again.',
+    'success.tokenCreated': 'Token created successfully',
+    'success.tokenCreatedDesc':
+      'Your token {name} ({symbol}) has been created.',
+  }
+  return translations[key] || key
 }
+
+const formSchema = z.object({
+  name: z
+    .string()
+    .min(1, t('form.name.label') + ' is required')
+    .max(32, t('form.name.label') + ' must be 32 characters or less'),
+  symbol: z
+    .string()
+    .min(1, t('form.symbol.label') + ' is required')
+    .max(10, t('form.symbol.label') + ' must be 10 characters or less')
+    .regex(
+      /^[A-Z]+$/,
+      t('form.symbol.label') + ' must be uppercase letters only'
+    ),
+  imageUrl: z
+    .string()
+    .url('Invalid image URL')
+    .min(1, t('form.imageUrl.label') + ' is required'),
+  initialSupply: z
+    .string()
+    .min(1, t('form.initialSupply.label') + ' is required')
+    .refine(
+      (val) => !isNaN(Number(val)) && Number(val) > 0,
+      t('form.initialSupply.label') + ' must be a positive number'
+    ),
+  decimals: z
+    .string()
+    .min(1, t('form.decimals.label') + ' is required')
+    .refine(
+      (val) => !isNaN(Number(val)) && Number(val) >= 0 && Number(val) <= 9,
+      t('form.decimals.label') + ' must be between 0 and 9'
+    ),
+})
+
+type FormData = z.infer<typeof formSchema>
 
 export function TokenLaunchpad() {
   const { connection } = useConnection()
   const wallet = useWallet()
+  const [isLoading, setIsLoading] = useState(false)
   const {
     register,
     handleSubmit,
     formState: { errors },
-  } = useForm<FormData>()
+    reset,
+  } = useForm<FormData>({
+    resolver: zodResolver(formSchema),
+  })
 
   useEffect(() => {
     if (!wallet.connected) {
-      toast.error('Wallet not connected', {
-        description: 'Please connect your wallet to create a token.',
+      toast.error(t('error.walletNotConnected'), {
+        description: t('error.walletNotConnectedDesc'),
       })
     }
   }, [wallet.connected])
 
-  const onSubmit = async (data: FormData) => {
-    if (!wallet.publicKey) {
-      toast.error('Wallet not connected', {
-        description: 'Please connect your wallet to create a token.',
-      })
-      return
-    }
+  const sanitizeUrl = useCallback((url: string) => {
+    const pattern =
+      /^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$/
+    return pattern.test(url) ? url : ''
+  }, [])
 
-    toast.loading('Creating token...', { id: 'creating-token' })
-
-    try {
-      const keypair = Keypair.generate()
-
-      const metadata: TokenMetadata = {
-        updateAuthority: wallet.publicKey,
-        mint: keypair.publicKey,
-        name: data.name,
-        symbol: data.symbol,
-        uri: 'https://www.dsandev.in/api/token',
-        additionalMetadata: [
-          ['description', 'Only Possible On Solana'],
-          ['image', data.imageUrl],
-        ],
+  const createToken = useCallback(
+    async (data: FormData) => {
+      if (!wallet.publicKey) {
+        toast.error(t('error.walletNotConnected'), {
+          description: t('error.walletNotConnectedDesc'),
+        })
+        return
       }
 
-      const mintLen = getMintLen([ExtensionType.MetadataPointer])
-      const metadataLen = TYPE_SIZE + LENGTH_SIZE + pack(metadata).length
+      setIsLoading(true)
+      toast.loading(t('form.submitting'), { id: 'creating-token' })
 
-      const lamports = await connection.getMinimumBalanceForRentExemption(
-        mintLen + metadataLen
-      )
+      try {
+        const keypair = Keypair.generate()
 
-      const transaction = new Transaction()
-
-      transaction.add(
-        SystemProgram.createAccount({
-          fromPubkey: wallet.publicKey,
-          newAccountPubkey: keypair.publicKey,
-          space: mintLen,
-          lamports,
-          programId: TOKEN_2022_PROGRAM_ID,
-        }),
-        createInitializeMetadataPointerInstruction(
-          keypair.publicKey,
-          wallet.publicKey,
-          keypair.publicKey,
-          TOKEN_2022_PROGRAM_ID
-        ),
-        createInitializeMintInstruction(
-          keypair.publicKey,
-          parseInt(data.decimals),
-          wallet.publicKey,
-          wallet.publicKey,
-          TOKEN_2022_PROGRAM_ID
-        ),
-        createInitializeInstruction({
-          programId: TOKEN_2022_PROGRAM_ID,
+        const metadata: TokenMetadata = {
+          updateAuthority: wallet.publicKey,
           mint: keypair.publicKey,
-          metadata: keypair.publicKey,
-          updateAuthority: wallet.publicKey,
-          mintAuthority: wallet.publicKey,
-          name: metadata.name,
-          symbol: metadata.symbol,
-          uri: metadata.uri,
-        }),
-        createUpdateFieldInstruction({
-          programId: TOKEN_2022_PROGRAM_ID,
-          metadata: keypair.publicKey,
-          updateAuthority: wallet.publicKey,
-          field: metadata.additionalMetadata[1][0],
-          value: metadata.additionalMetadata[1][1],
+          name: data.name,
+          symbol: data.symbol,
+          uri: 'https://www.dsandev.in/api/token',
+          additionalMetadata: [
+            ['description', 'Only Possible On Solana'],
+            ['image', sanitizeUrl(data.imageUrl)],
+          ],
+        }
+
+        const mintLen = getMintLen([ExtensionType.MetadataPointer])
+        const metadataLen = TYPE_SIZE + LENGTH_SIZE + pack(metadata).length
+
+        const lamports = await connection.getMinimumBalanceForRentExemption(
+          mintLen + metadataLen
+        )
+
+        const transaction = new Transaction()
+
+        transaction.add(
+          SystemProgram.createAccount({
+            fromPubkey: wallet.publicKey,
+            newAccountPubkey: keypair.publicKey,
+            space: mintLen,
+            lamports,
+            programId: TOKEN_2022_PROGRAM_ID,
+          }),
+          createInitializeMetadataPointerInstruction(
+            keypair.publicKey,
+            wallet.publicKey,
+            keypair.publicKey,
+            TOKEN_2022_PROGRAM_ID
+          ),
+          createInitializeMintInstruction(
+            keypair.publicKey,
+            parseInt(data.decimals),
+            wallet.publicKey,
+            wallet.publicKey,
+            TOKEN_2022_PROGRAM_ID
+          ),
+          createInitializeInstruction({
+            programId: TOKEN_2022_PROGRAM_ID,
+            mint: keypair.publicKey,
+            metadata: keypair.publicKey,
+            updateAuthority: wallet.publicKey,
+            mintAuthority: wallet.publicKey,
+            name: metadata.name,
+            symbol: metadata.symbol,
+            uri: metadata.uri,
+          }),
+          createUpdateFieldInstruction({
+            programId: TOKEN_2022_PROGRAM_ID,
+            metadata: keypair.publicKey,
+            updateAuthority: wallet.publicKey,
+            field: metadata.additionalMetadata[1][0],
+            value: metadata.additionalMetadata[1][1],
+          })
+        )
+
+        const recentBlockhash = await connection.getLatestBlockhashAndContext()
+        transaction.recentBlockhash = recentBlockhash.value.blockhash
+        transaction.feePayer = wallet.publicKey
+
+        transaction.partialSign(keypair)
+
+        const response = await wallet.sendTransaction(transaction, connection)
+
+        const associatedToken = getAssociatedTokenAddressSync(
+          keypair.publicKey,
+          wallet.publicKey,
+          false,
+          TOKEN_2022_PROGRAM_ID
+        )
+
+        const transaction2 = new Transaction()
+
+        transaction2.add(
+          createAssociatedTokenAccountInstruction(
+            wallet.publicKey,
+            associatedToken,
+            wallet.publicKey,
+            keypair.publicKey,
+            TOKEN_2022_PROGRAM_ID
+          )
+        )
+
+        await wallet.sendTransaction(transaction2, connection)
+
+        const transaction3 = new Transaction()
+
+        transaction3.add(
+          createMintToInstruction(
+            keypair.publicKey,
+            associatedToken,
+            wallet.publicKey,
+            parseFloat(data.initialSupply) * 10 ** parseInt(data.decimals),
+            [],
+            TOKEN_2022_PROGRAM_ID
+          )
+        )
+
+        await wallet.sendTransaction(transaction3, connection)
+
+        toast.success(t('success.tokenCreated'), {
+          description: t('success.tokenCreatedDesc')
+            .replace('{name}', data.name)
+            .replace('{symbol}', data.symbol),
+          id: 'creating-token',
         })
-      )
 
-      const recentBlockhash = await connection.getLatestBlockhashAndContext()
-      transaction.recentBlockhash = recentBlockhash.value.blockhash
-      transaction.feePayer = wallet.publicKey
+        reset()
+      } catch (error) {
+        console.error('Error creating token:', error)
+        let errorMessage = t('error.generic')
+        if (error instanceof Error) {
+          if (error.message.includes('insufficient funds')) {
+            errorMessage = t('error.insufficientFunds')
+          } else if (error.message.includes('Transaction simulation failed')) {
+            errorMessage = t('error.transactionFailed')
+          }
+        }
+        toast.error(t('error.generic'), {
+          description: errorMessage,
+          id: 'creating-token',
+        })
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [wallet, connection, sanitizeUrl, reset]
+  )
 
-      transaction.partialSign(keypair)
-
-      const response = await wallet.sendTransaction(transaction, connection)
-
-      const associatedToken = getAssociatedTokenAddressSync(
-        keypair.publicKey,
-        wallet.publicKey,
-        false,
-        TOKEN_2022_PROGRAM_ID
-      )
-
-      const transaction2 = new Transaction()
-
-      transaction2.add(
-        createAssociatedTokenAccountInstruction(
-          wallet.publicKey,
-          associatedToken,
-          wallet.publicKey,
-          keypair.publicKey,
-          TOKEN_2022_PROGRAM_ID
-        )
-      )
-
-      await wallet.sendTransaction(transaction2, connection)
-
-      const transaction3 = new Transaction()
-
-      transaction3.add(
-        createMintToInstruction(
-          keypair.publicKey,
-          associatedToken,
-          wallet.publicKey,
-          parseFloat(data.initialSupply) * 10 ** parseInt(data.decimals),
-          [],
-          TOKEN_2022_PROGRAM_ID
-        )
-      )
-
-      await wallet.sendTransaction(transaction3, connection)
-
-      toast.success('Token created successfully', {
-        description: `Your token ${data.name} (${data.symbol}) has been created.`,
-        id: 'creating-token',
-      })
-    } catch (error) {
-      console.error('Error creating token:', error)
-      toast.error('Error creating token', {
-        description:
-          'An error occurred while creating the token. Please try again.',
-        id: 'creating-token',
-      })
-    }
-  }
+  const formFields = useMemo(
+    () => [
+      {
+        name: 'name',
+        label: t('form.name.label'),
+        placeholder: t('form.name.placeholder'),
+        tooltip: t('form.name.tooltip'),
+        icon: Coins,
+      },
+      {
+        name: 'symbol',
+        label: t('form.symbol.label'),
+        placeholder: t('form.symbol.placeholder'),
+        tooltip: t('form.symbol.tooltip'),
+        icon: Tag,
+      },
+      {
+        name: 'imageUrl',
+        label: t('form.imageUrl.label'),
+        placeholder: t('form.imageUrl.placeholder'),
+        tooltip: t('form.imageUrl.tooltip'),
+        icon: Image,
+      },
+      {
+        name: 'initialSupply',
+        label: t('form.initialSupply.label'),
+        placeholder: t('form.initialSupply.placeholder'),
+        tooltip: t('form.initialSupply.tooltip'),
+        icon: Layers,
+      },
+      {
+        name: 'decimals',
+        label: t('form.decimals.label'),
+        placeholder: t('form.decimals.placeholder'),
+        tooltip: t('form.decimals.tooltip'),
+        icon: Hash,
+      },
+    ],
+    []
+  )
 
   return (
-    <>
-      {/* Hero Section */}
-      <section className='py-20 text-center text-black bg-yellow-300 relative overflow-hidden'>
-        <div className='container mx-auto relative z-10'>
+    <TooltipProvider delayDuration={0}>
+      <section className='py-10 md:py-20 text-center text-black bg-yellow-300 relative overflow-hidden'>
+        <div className='container mx-auto relative z-10 px-4'>
           <motion.h2
-            className='text-6xl font-bold mb-4'
+            className='text-4xl md:text-6xl font-bold mb-4'
             initial={{ opacity: 0, y: -50 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.2 }}
           >
-            Launch Your Solana Token
+            {t('hero.title')}
           </motion.h2>
           <motion.p
-            className='text-2xl mb-8'
+            className='text-xl md:text-2xl mb-8'
             initial={{ opacity: 0, y: -30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.4 }}
           >
-            Create and deploy your custom token on the Solana blockchain in
-            minutes!
+            {t('hero.description')}
           </motion.p>
           <motion.a
             href='#create-token'
@@ -214,153 +365,96 @@ export function TokenLaunchpad() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.6 }}
           >
-            Get Started
+            {t('hero.cta')}
           </motion.a>
         </div>
       </section>
 
-      {/* Token Creation Form */}
-      <section id='create-token' className='py-20 bg-blue-300'>
-        <div className='container mx-auto'>
+      <section id='create-token' className='py-10 md:py-20 bg-blue-300'>
+        <div className='container mx-auto px-4'>
           <motion.div
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             transition={{ duration: 0.5 }}
-            className='bg-white border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] p-8 max-w-2xl mx-auto'
+            className='bg-white border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] p-6 md:p-8 max-w-2xl mx-auto'
           >
-            <h3 className='text-4xl font-bold mb-8 text-center text-black'>
-              Create Your Token
+            <h3 className='text-3xl md:text-4xl font-bold mb-8 text-center text-black'>
+              {t('form.title')}
             </h3>
             <form
-              onSubmit={handleSubmit(onSubmit)}
+              onSubmit={handleSubmit(createToken)}
               className='grid grid-cols-1 md:grid-cols-2 gap-6'
             >
-              <div>
-                <label
-                  htmlFor='name'
-                  className='block text-lg font-bold mb-2 text-black'
-                >
-                  <Coins className='inline-block mr-2 h-5 w-5' />
-                  Token Name
-                </label>
-                <input
-                  id='name'
-                  type='text'
-                  placeholder='Enter token name'
-                  {...register('name', { required: 'Token name is required' })}
-                  className='w-full p-3 border-2 border-black rounded-none focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition-all duration-300'
-                  aria-label='Token Name'
-                />
-                {errors.name && (
-                  <p className='text-red-500 mt-1'>{errors.name.message}</p>
-                )}
-              </div>
-              <div>
-                <label
-                  htmlFor='symbol'
-                  className='block text-lg font-bold mb-2 text-black'
-                >
-                  <Tag className='inline-block mr-2 h-5 w-5' />
-                  Token Symbol
-                </label>
-                <input
-                  id='symbol'
-                  type='text'
-                  placeholder='Enter token symbol'
-                  {...register('symbol', {
-                    required: 'Token symbol is required',
-                  })}
-                  className='w-full p-3 border-2 border-black rounded-none focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition-all duration-300'
-                  aria-label='Token Symbol'
-                />
-                {errors.symbol && (
-                  <p className='text-red-500 mt-1'>{errors.symbol.message}</p>
-                )}
-              </div>
-              <div>
-                <label
-                  htmlFor='imageUrl'
-                  className='block text-lg font-bold mb-2 text-black'
-                >
-                  <Image className='inline-block mr-2 h-5 w-5' />
-                  Image URL
-                </label>
-                <input
-                  id='imageUrl'
-                  type='url'
-                  placeholder='Enter image URL'
-                  {...register('imageUrl', {
-                    required: 'Image URL is required',
-                  })}
-                  className='w-full p-3 border-2 border-black rounded-none focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition-all duration-300'
-                  aria-label='Image URL'
-                />
-                {errors.imageUrl && (
-                  <p className='text-red-500 mt-1'>{errors.imageUrl.message}</p>
-                )}
-              </div>
-              <div>
-                <label
-                  htmlFor='initialSupply'
-                  className='block text-lg font-bold mb-2 text-black'
-                >
-                  <Layers className='inline-block mr-2 h-5 w-5' />
-                  Initial Supply
-                </label>
-                <input
-                  id='initialSupply'
-                  type='number'
-                  placeholder='Enter initial supply'
-                  {...register('initialSupply', {
-                    required: 'Initial supply is required',
-                  })}
-                  className='w-full p-3 border-2 border-black rounded-none focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition-all duration-300'
-                  aria-label='Initial Supply'
-                />
-                {errors.initialSupply && (
-                  <p className='text-red-500 mt-1'>
-                    {errors.initialSupply.message}
-                  </p>
-                )}
-              </div>
-              <div>
-                <label
-                  htmlFor='decimals'
-                  className='block text-lg font-bold mb-2 text-black'
-                >
-                  <Hash className='inline-block mr-2 h-5 w-5' />
-                  Decimals
-                </label>
-                <input
-                  id='decimals'
-                  type='number'
-                  placeholder='Enter number of decimals'
-                  {...register('decimals', {
-                    required: 'Number of decimals is required',
-                  })}
-                  className='w-full p-3 border-2 border-black rounded-none focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition-all duration-300'
-                  aria-label='Decimals'
-                />
-                {errors.decimals && (
-                  <p className='text-red-500 mt-1'>{errors.decimals.message}</p>
-                )}
-              </div>
+              {formFields.map((field) => (
+                <div key={field.name}>
+                  <label
+                    htmlFor={field.name}
+                    className='block text-lg font-bold mb-2 text-black'
+                  >
+                    <field.icon className='inline-block mr-2 h-5 w-5' />
+                    {field.label}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Info className='inline-block ml-1 h-4 w-4 cursor-help' />
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>{field.tooltip}</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </label>
+                  <input
+                    id={field.name}
+                    type={
+                      field.name === 'imageUrl'
+                        ? 'url'
+                        : field.name === 'initial Supply' ||
+                          field.name === 'decimals'
+                        ? 'number'
+                        : 'text'
+                    }
+                    placeholder={field.placeholder}
+                    {...register(field.name as keyof FormData)}
+                    className='w-full p-3 border-2 border-black rounded-none focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition-all duration-300'
+                    aria-label={field.label}
+                    aria-invalid={
+                      errors[field.name as keyof FormData] ? 'true' : 'false'
+                    }
+                  />
+                  {errors[field.name as keyof FormData] && (
+                    <p className='text-red-500 mt-1' role='alert'>
+                      {errors[field.name as keyof FormData]?.message}
+                    </p>
+                  )}
+                </div>
+              ))}
               <div className='md:col-span-2'>
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   type='submit'
-                  disabled={!wallet.connected}
+                  disabled={!wallet.connected || isLoading}
                   className='w-full mt-8 bg-black text-yellow-300 font-bold py-4 px-4 rounded-none border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-none transition-all duration-300 flex items-center justify-center text-lg disabled:opacity-50 disabled:cursor-not-allowed'
+                  aria-label={
+                    isLoading ? t('form.submitting') : t('form.submit')
+                  }
                 >
-                  <Rocket className='mr-2 h-6 w-6' />
-                  Launch Token
+                  {isLoading ? (
+                    <>
+                      <Loader2 className='mr-2 h-6 w-6 animate-spin' />
+                      {t('form.submitting')}
+                    </>
+                  ) : (
+                    <>
+                      <Rocket className='mr-2 h-6 w-6' />
+                      {t('form.submit')}
+                    </>
+                  )}
                 </motion.button>
               </div>
             </form>
           </motion.div>
         </div>
       </section>
-    </>
+    </TooltipProvider>
   )
 }
