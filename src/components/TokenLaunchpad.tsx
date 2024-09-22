@@ -43,58 +43,12 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { ErrorBoundary } from 'react-error-boundary'
+import { t } from '@/lib/constants'
+import StepIndicator from './StepIndicator'
+import TokenPreview from './TokenPreview'
 
 
-const t = (key: string) => {
-  const translations: { [key: string]: string } = {
-    'hero.title': 'Launch Your Solana Token',
-    'hero.description':
-      'Create and deploy your custom token on the Solana blockchain in minutes!',
-    'hero.cta': 'Get Started',
-    'form.title': 'Create Your Token (Devnet Only)',
-    'form.name.label': 'Token Name',
-    'form.name.placeholder': 'Enter token name',
-    'form.name.tooltip': 'The name of your token (max 32 characters)',
-    'form.symbol.label': 'Token Symbol',
-    'form.symbol.placeholder': 'Enter token symbol',
-    'form.symbol.tooltip':
-      'A short identifier for your token (max 10 uppercase characters)',
-    'form.imageUrl.label': 'Image URL',
-    'form.imageUrl.placeholder': 'Enter image URL',
-    'form.imageUrl.tooltip':
-      'A URL pointing to an image representing your token',
-    'form.initialSupply.label': 'Initial Supply',
-    'form.initialSupply.placeholder': 'Enter initial supply',
-    'form.initialSupply.tooltip': 'The initial number of tokens to mint',
-    'form.decimals.label': 'Decimals',
-    'form.decimals.placeholder': 'Enter number of decimals',
-    'form.decimals.tooltip':
-      'The number of decimal places for your token (0-9)',
-    'form.submit': 'Launch Token',
-    'form.submitting': 'Creating Token...',
-    'error.walletNotConnected': 'Wallet not connected',
-    'error.walletNotConnectedDesc':
-      'Please connect your wallet to create a token.',
-    'error.insufficientFunds':
-      'Insufficient funds to create the token. Please check your wallet balance.',
-    'error.transactionFailed':
-      'Transaction simulation failed. This could be due to network congestion or an issue with the token parameters.',
-    'error.generic':
-      'An error occurred while creating the token. Please try again.',
-    'success.tokenCreated': 'Token created successfully',
-    'success.tokenCreatedDesc':
-      'Your token {name} ({symbol}) has been created.',
-    'preview.title': 'Token Preview',
-    'transaction.success': 'Transaction Successful!',
-    'transaction.viewExplorer': 'View Transaction',
-    'steps.info': 'Token Creation Steps',
-    'steps.prepare': 'Prepare Token Data',
-    'steps.create': 'Create Token',
-    'steps.mint': 'Mint Initial Supply',
-    'steps.complete': 'Complete',
-  }
-  return translations[key] || key
-}
+
 
 const formSchema = z.object({
   name: z
@@ -129,32 +83,9 @@ const formSchema = z.object({
     ),
 })
 
-type FormData = z.infer<typeof formSchema>
+export type FormData = z.infer<typeof formSchema>
 
-const TokenPreview = React.memo(
-  ({ name, symbol, imageUrl }: Partial<FormData>) => {
-    return (
-      <div className='bg-white p-4 rounded-lg shadow-md'>
-        <h4 className='text-lg font-bold mb-2'>{t('preview.title')}</h4>
-        <div className='flex items-center space-x-4'>
-          {imageUrl && (
-            <img
-              src={imageUrl}
-              alt='Token'
-              className='w-16 h-16 rounded-full object-cover'
-            />
-          )}
-          <div>
-            <p className='font-semibold'>{name || 'Token Name'}</p>
-            <p className='text-sm text-gray-600'>{symbol || 'SYM'}</p>
-          </div>
-        </div>
-      </div>
-    )
-  }
-)
 
-TokenPreview.displayName = 'TokenPreview'
 
 function ErrorFallback({
   error,
@@ -180,33 +111,7 @@ function ErrorFallback({
   )
 }
 
-const StepIndicator = React.memo(({ currentStep }: { currentStep: number }) => {
-  const steps = [
-    { title: t('steps.prepare'), icon: Coins },
-    { title: t('steps.create'), icon: Rocket },
-    { title: t('steps.mint'), icon: Layers },
-    { title: t('steps.complete'), icon: CheckCircle2 },
-  ]
 
-  return (
-    <div className='flex justify-between mb-8'>
-      {steps.map((step, index) => (
-        <div key={step.title} className='flex flex-col items-center'>
-          <div
-            className={`w-8 h-8 rounded-full flex items-center justify-center ${
-              index <= currentStep ? 'bg-yellow-300' : 'bg-gray-300'
-            }`}
-          >
-            <step.icon className='w-5 h-5 text-black' />
-          </div>
-          <span className='text-xs mt-1'>{step.title}</span>
-        </div>
-      ))}
-    </div>
-  )
-})
-
-StepIndicator.displayName = 'StepIndicator'
 
 export function TokenLaunchpad() {
   const { connection } = useConnection()
